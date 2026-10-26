@@ -1,6 +1,6 @@
 [package]
-name = "primase-rsx"
-description = "RSX shader program containers"
+name = "primase-lua51"
+description = "Strict reader of Lua 5.1 precompiled chunks (any byte order) and a lister of the calls made with constant arguments"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
