@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "lua51-bytecode"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "primase-foundations",
  "thiserror",

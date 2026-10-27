@@ -49,7 +49,7 @@ fn main() -> Result<(), lua51_bytecode::Error> {
 
 The same example runs as a doc test of the crate (`cargo test --doc`). To try the reader on a file, `cargo run --example list_calls -- script.luac` prints the header and the calls.
 
-The crate is not on crates.io yet; depend on it from git. Its API names byte orders with `Endian`, which it re-exports from the [`primase-foundations`](https://github.com/Kalmarv/primase-foundations) crate, a small byte-cursor library it depends on.
+Add it with `cargo add lua51-bytecode` (or `lua51-bytecode = "0.1"` under `[dependencies]`). Its API names byte orders with `Endian`, which it re-exports from the [`primase-foundations`](https://github.com/Kalmarv/primase-foundations) crate, a small byte-cursor library it depends on.
 
 ## What it guarantees
 
