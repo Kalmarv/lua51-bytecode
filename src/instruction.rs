@@ -9,43 +9,81 @@
 /// The 38 opcodes of Lua 5.1, in `lopcodes.h`'s order (the number a word stores); `SelfOp` is `OP_SELF`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
+    /// `R(A) := R(B)`.
     Move,
+    /// `R(A) := Kst(Bx)`: a constant into a register.
     LoadK,
+    /// `R(A) := (bool)B`; skips the next instruction when `C` is not 0.
     LoadBool,
+    /// `R(A) .. R(B) := nil`: every register from `A` to `B` inclusive.
     LoadNil,
+    /// `R(A) := UpValue[B]`.
     GetUpval,
+    /// `R(A) := Gbl[Kst(Bx)]`; the constant is the global's name.
     GetGlobal,
+    /// `R(A) := R(B)[RK(C)]`.
     GetTable,
+    /// `Gbl[Kst(Bx)] := R(A)`; the constant is the global's name.
     SetGlobal,
+    /// `UpValue[B] := R(A)`.
     SetUpval,
+    /// `R(A)[RK(B)] := RK(C)`.
     SetTable,
+    /// `R(A) := {}`; `B` and `C` are the array and hash size hints, each in Lua's floating-point byte encoding.
     NewTable,
+    /// `R(A+1) := R(B); R(A) := R(B)[RK(C)]`: a method call's object and function (`OP_SELF`).
     SelfOp,
+    /// `R(A) := RK(B) + RK(C)`.
     Add,
+    /// `R(A) := RK(B) - RK(C)`.
     Sub,
+    /// `R(A) := RK(B) * RK(C)`.
     Mul,
+    /// `R(A) := RK(B) / RK(C)`.
     Div,
+    /// `R(A) := RK(B) % RK(C)`.
     Mod,
+    /// `R(A) := RK(B) ^ RK(C)`.
     Pow,
+    /// `R(A) := -R(B)`.
     Unm,
+    /// `R(A) := not R(B)`.
     Not,
+    /// `R(A) := length of R(B)`.
     Len,
+    /// `R(A) := R(B) .. ... .. R(C)`: the registers `B` to `C` inclusive.
     Concat,
+    /// `pc += sBx`.
     Jmp,
+    /// `if (RK(B) == RK(C)) ~= A then pc++`; followed by a [`Op::Jmp`].
     Eq,
+    /// `if (RK(B) < RK(C)) ~= A then pc++`; followed by a [`Op::Jmp`].
     Lt,
+    /// `if (RK(B) <= RK(C)) ~= A then pc++`; followed by a [`Op::Jmp`].
     Le,
+    /// `if not (R(A) <=> C) then pc++`: skips the next instruction unless the truth of `R(A)` is `C`; followed by a [`Op::Jmp`].
     Test,
+    /// `if (R(B) <=> C) then R(A) := R(B) else pc++`; followed by a [`Op::Jmp`].
     TestSet,
+    /// `R(A) .. R(A+C-2) := R(A)(R(A+1) .. R(A+B-1))`; `B` 0 takes arguments up to the stack top, `C` 0 keeps all results.
     Call,
+    /// `return R(A)(R(A+1) .. R(A+B-1))`; `B` 0 takes arguments up to the stack top.
     TailCall,
+    /// `return R(A) .. R(A+B-2)`; `B` 0 returns up to the stack top.
     Return,
+    /// Numeric `for` step: `R(A) += R(A+2)`, and while `R(A)` has not passed the limit `R(A+1)` it sets `R(A+3) := R(A)` and jumps by `sBx`.
     ForLoop,
+    /// Numeric `for` start: `R(A) -= R(A+2); pc += sBx`.
     ForPrep,
+    /// Generic `for` step: `R(A+3) .. R(A+2+C) := R(A)(R(A+1), R(A+2))`; if `R(A+3)` is not nil it becomes `R(A+2)`, otherwise the next instruction (a [`Op::Jmp`] back) is skipped.
     TForLoop,
+    /// `R(A)[(C-1)*50 + i] := R(A+i)` for `1 <= i <= B`: stores up to 50 table items per instruction; `B` 0 takes up to the stack top.
     SetList,
+    /// Closes the upvalues of every local from `R(A)` up.
     Close,
+    /// `R(A) := closure(KPROTO[Bx])`; followed by one `MOVE` or `GETUPVAL` instruction per upvalue of that function.
     Closure,
+    /// `R(A) .. R(A+B-2) = ...`; `B` 0 takes all the extra arguments.
     VarArg,
 }
 
@@ -94,9 +132,13 @@ const OPS: [Op; 38] = [
 /// from 256 on, a constant (`RegisterOrConstant`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operand {
+    /// The field is not used.
     Unused,
+    /// A plain number: a count, a flag, an index into a table of upvalues or a size hint.
     Number,
+    /// A register number.
     Register,
+    /// A register number below 256, or a constant index from 256 on (`256 + index`).
     RegisterOrConstant,
 }
 

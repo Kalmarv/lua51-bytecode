@@ -8,7 +8,7 @@ A strict Rust reader for compiled Lua 5.1 scripts (`luac` output) that checks un
 - Everything in a chunk: the header, each function prototype (source name, line range, upvalue and parameter counts, `is_vararg`, stack size), the decoded instructions (all 38 Lua 5.1 opcodes), the constants (`nil`, booleans, numbers, strings as bytes), nested functions, and the debug tables (line numbers, locals, upvalue names) when the chunk is not stripped.
 - **Calls with constant arguments.** `calls(&chunk.main)` follows registers through `LOADK`, `LOADBOOL`, `LOADNIL`, `MOVE`, `GETGLOBAL`, `GETTABLE`, `SELF` and arithmetic on numbers, and reports every `CALL` and `TAILCALL` with what its callee and arguments held. This is how a script that only configures an engine, such as `change_fog(400, 700, -10)` or `level.LoadData(level, "path")`, reads without running a Lua VM.
 
-It reads Lua 5.1 only (not 5.2 or later, LuaJIT or Luau chunks).
+It reads Lua 5.1 only (not 5.2 or later, LuaJIT or Luau chunks). It is checked against chunks written byte by byte from the Lua 5.1 sources (`lopcodes.h`, `lundump.c`) and hostile variants of them; this repository holds no scripts from any game.
 
 ## Example
 
@@ -71,7 +71,7 @@ The crate is not on crates.io yet; depend on it from git. Its API names byte ord
 cargo test --workspace
 ```
 
-`tests/hostile.rs` and `tests/allocation.rs` hold hand-built hostile chunks: wrong offsets, counts larger than the bytes present (with a counting allocator), and field chains meant to blow up the call lister. `tests/chunks.rs` reads chunks written out byte by byte from `lopcodes.h` and `lundump.c` (the same function big- and little-endian; one that folds `-10`, jumps and nests a method call; constants of every type). It refuses each header field, every truncation of each of them and a trailing byte, and each rule of the verifier at the byte that breaks it. The tests need no game files or other data.
+`tests/hostile.rs` and `tests/allocation.rs` hold hand-built hostile chunks: wrong offsets, counts larger than the bytes present (with a counting allocator), and field chains meant to blow up the call lister. `tests/chunks.rs` reads chunks written out byte by byte from `lopcodes.h` and `lundump.c` (the same function big- and little-endian; one that folds `-10`, jumps and nests a method call; constants of every type). It refuses each header field, every truncation of each of them and a trailing byte, and each rule of the verifier at the byte that breaks it. The tests need no game files or other data, so there is no `GAME_DATA` file to set up.
 
 ## Contributing
 

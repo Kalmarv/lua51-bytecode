@@ -28,8 +28,11 @@ pub const MAX_VALUE_NODES: usize = 64;
 pub enum Value {
     /// Not known without running the function (also a field chain of more than [`MAX_VALUE_NODES`] nodes).
     Unknown,
+    /// `nil`.
     Nil,
+    /// A boolean (`LOADBOOL`, or a boolean constant).
     Bool(bool),
+    /// A number: a numeric constant or arithmetic on constant numbers (folded as the VM would, in `f64`).
     Number(f64),
     /// A string constant, shared with every register and call that read it.
     Str(Arc<[u8]>),
@@ -52,11 +55,13 @@ pub struct Call {
     pub pc: usize,
     /// Its source line; `None` in a stripped chunk.
     pub line: Option<u32>,
+    /// What the called register held: usually a [`Value::Global`] or a [`Value::Field`] of one.
     pub callee: Value,
     /// The arguments (for a method call by `SELF`, the object first). Empty when `open_args`.
     pub args: Vec<Value>,
     /// The argument list runs to the stack top (the last argument is a call or `...`): its length is not known.
     pub open_args: bool,
+    /// The instruction is a `TAILCALL` (`return f(...)`), not a `CALL`.
     pub tail: bool,
 }
 

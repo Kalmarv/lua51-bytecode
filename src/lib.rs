@@ -58,6 +58,7 @@
 //!
 //! Byte orders are named with [`Endian`], re-exported from the `primase-foundations` crate.
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
+#![deny(missing_docs)]
 #![deny(
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
