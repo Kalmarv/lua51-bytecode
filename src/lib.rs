@@ -10,7 +10,7 @@
 //! than an 8-byte float, a count the rest of the chunk cannot hold, a string without its terminating NUL, a boolean
 //! other than 0 or 1, an unknown constant type, a chain of more than [`MAX_DEPTH`] functions inside one another, a byte
 //! after the main function, and code the verifier rejects. The verifier is a subset of `luaG_checkcode`: it refuses an
-//! opcode that does not exist, a register past the function's stack, a constant, function or upvalue past its table, a
+//! opcode that does not exist, a register past the function's stack, a constant, function or upvalue past its table, a `GETGLOBAL` or `SETGLOBAL` whose constant is not a string, a
 //! jump out of the code, a test not followed by a jump, a `CLOSURE` not followed by its upvalue instructions, and a
 //! function that does not end in `RETURN`.
 //!
@@ -19,6 +19,7 @@
 //!
 //! ```
 //! use lua51_bytecode::{Chunk, Value, calls};
+//! use std::sync::Arc;
 //!
 //! // `print(1.5, "a")` as `luac` writes it for a little-endian machine with 4-byte `int` and `size_t`.
 //! let bytes: &[u8] = &[
@@ -46,8 +47,8 @@
 //!
 //! let found = calls(&chunk.main);
 //! assert_eq!(found.len(), 1);
-//! assert_eq!(found[0].callee, Value::Global(b"print".to_vec()));
-//! assert_eq!(found[0].args, [Value::Number(1.5), Value::Str(b"a".to_vec())]);
+//! assert_eq!(found[0].callee, Value::Global(Arc::from(&b"print"[..])));
+//! assert_eq!(found[0].args, [Value::Number(1.5), Value::Str(Arc::from(&b"a"[..]))]);
 //!
 //! // Anything `luac` would not write is refused, with the offset of the byte at fault.
 //! let error = Chunk::parse(&bytes[..bytes.len() - 1]).unwrap_err();
@@ -55,7 +56,7 @@
 //! # Ok::<(), lua51_bytecode::Error>(())
 //! ```
 //!
-//! Byte orders are named with `Endian` from the `primase-foundations` crate (`primase_foundations::bytes::Endian`).
+//! Byte orders are named with [`Endian`], re-exported from the `primase-foundations` crate.
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 #![deny(
     clippy::arithmetic_side_effects,
@@ -66,9 +67,10 @@
 mod calls;
 mod instruction;
 
-pub use calls::{Call, Value, calls};
+pub use calls::{Call, MAX_VALUE_NODES, Value, calls};
 pub use instruction::{Instruction, Layout, Op, Operand};
-use primase_foundations::bytes::{BoundsError, Cursor, Endian};
+pub use primase_foundations::bytes::Endian;
+use primase_foundations::bytes::{BoundsError, Cursor};
 
 /// What is wrong with a chunk, and where (a byte offset in it).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -199,10 +201,11 @@ impl Reader<'_> {
     fn int(&mut self) -> Result<u32, Error> {
         let at = self.c.position();
         let v = self.unsigned(self.header.int_size)?;
-        u32::try_from(v).map_err(|_| self.err(at, format!("an int of {v} past 32 bits")))
+        u32::try_from(v).map_err(|_| self.err(at, format!("an int of {v}, expected at most {}", u32::MAX)))
     }
 
-    /// A count of items of at least `each` bytes that the rest of the chunk can hold.
+    /// A count of items of at least `each` bytes that the rest of the chunk can hold: nothing is allocated for
+    /// more items than the bytes that remain can hold, so `each` is the least an item takes in the file.
     fn count(&mut self, each: usize) -> Result<usize, Error> {
         let at = self.c.position();
         let v = self.unsigned(self.header.int_size)?;
@@ -212,9 +215,33 @@ impl Reader<'_> {
             Some(need) if need <= self.c.remaining() => Ok(n),
             _ => Err(self.err(
                 at,
-                format!("a count of {n} items but {} bytes remain", self.c.remaining()),
+                format!(
+                    "a count of {n} items of at least {each} bytes but {} bytes remain",
+                    self.c.remaining()
+                ),
             )),
         }
+    }
+
+    fn int_bytes(&self) -> usize {
+        usize::from(self.header.int_size)
+    }
+
+    fn size_t_bytes(&self) -> usize {
+        usize::from(self.header.size_t_size)
+    }
+
+    /// The least a nested function takes: its source size, two lines, four bytes and six counts.
+    fn least_proto(&self) -> usize {
+        self.size_t_bytes()
+            .saturating_add(self.int_bytes().saturating_mul(8))
+            .saturating_add(4)
+    }
+
+    /// The least a local variable record takes: a string size and two pcs.
+    fn least_local(&self) -> usize {
+        self.size_t_bytes()
+            .saturating_add(self.int_bytes().saturating_mul(2))
     }
 
     /// A string: its size with the NUL (0: none), then its bytes and that NUL.
@@ -292,36 +319,50 @@ impl Reader<'_> {
             });
         }
 
-        let n = self.count(1)?;
+        let n = self.count(self.least_proto())?;
         let mut protos = Vec::with_capacity(n);
         for _ in 0..n {
             protos.push(self.proto(depth.saturating_add(1))?);
         }
 
         let at = self.c.position();
-        let n = self.count(usize::from(self.header.int_size))?;
+        let n = self.count(self.int_bytes())?;
         if n != 0 && n != words.len() {
-            return Err(self.err(at, format!("{n} line numbers for {} instructions", words.len())));
+            return Err(self.err(
+                at,
+                format!(
+                    "{n} line numbers, expected 0 or {} (one per instruction)",
+                    words.len()
+                ),
+            ));
         }
         let mut lines = Vec::with_capacity(n);
         for _ in 0..n {
             lines.push(self.int()?);
         }
 
-        let n = self.count(usize::from(self.header.size_t_size))?;
+        let n = self.count(self.least_local())?;
         let mut locals = Vec::with_capacity(n);
         for _ in 0..n {
             let at = self.c.position();
             let name = self
                 .string()?
                 .ok_or_else(|| self.err(at, "a local variable with no name"))?;
+            let start_at = self.c.position();
             let start_pc = self.int()?;
+            let end_at = self.c.position();
             let end_pc = self.int()?;
-            if start_pc > end_pc || usize::try_from(end_pc).map_or(true, |e| e > words.len()) {
+            if start_pc > end_pc {
                 return Err(self.err(
-                    at,
+                    start_at,
+                    format!("a local with start_pc {start_pc} past its end_pc {end_pc}"),
+                ));
+            }
+            if usize::try_from(end_pc).map_or(true, |e| e > words.len()) {
+                return Err(self.err(
+                    end_at,
                     format!(
-                        "local {start_pc}..{end_pc} outside the {} instructions",
+                        "a local with end_pc {end_pc}, expected at most {} (the instruction count)",
                         words.len()
                     ),
                 ));
@@ -334,9 +375,12 @@ impl Reader<'_> {
         }
 
         let at = self.c.position();
-        let n = self.count(usize::from(self.header.size_t_size))?;
+        let n = self.count(self.size_t_bytes())?;
         if n != 0 && n != usize::from(upvalues) {
-            return Err(self.err(at, format!("{n} upvalue names for {upvalues} upvalues")));
+            return Err(self.err(
+                at,
+                format!("{n} upvalue names, expected 0 or {upvalues} (one per upvalue)"),
+            ));
         }
         let mut upvalue_names = Vec::with_capacity(n);
         for _ in 0..n {
@@ -421,8 +465,17 @@ impl Chunk {
         if instruction_size != 4 {
             return Err(fail(at.saturating_add(9), "an instruction of other than 4 bytes"));
         }
-        if number_size != 8 || integral != 0 {
-            return Err(fail(at.saturating_add(10), "numbers other than 8-byte floats"));
+        if number_size != 8 {
+            return Err(fail(
+                at.saturating_add(10),
+                "numbers of other than 8 bytes (expected 8-byte floats)",
+            ));
+        }
+        if integral != 0 {
+            return Err(fail(
+                at.saturating_add(11),
+                "integral numbers (expected the integral flag 0, 8-byte floats)",
+            ));
         }
         let header = Header {
             endian,
@@ -493,6 +546,11 @@ impl Proto {
                             }
                         } else {
                             konst(bx)?;
+                            if matches!(i.op, Op::GetGlobal | Op::SetGlobal)
+                                && !matches!(self.constants.get(bx), Some(Constant::Str(_)))
+                            {
+                                return Err(format!("global name constant {bx} is not a string"));
+                            }
                         }
                     }
                     Layout::AsBx => {

@@ -16,17 +16,25 @@
 )]
 
 use crate::{Constant, Instruction, Layout, Op, Proto};
+use std::sync::Arc;
+
+/// The most nodes a [`Value::Field`] chain may hold (every field, its table and its key count one each); a deeper
+/// or wider value is [`Value::Unknown`]. The bound keeps a hostile chain of `GETTABLE`s from building values that
+/// are thousands deep or that double with every instruction.
+pub const MAX_VALUE_NODES: usize = 64;
 
 /// What a register held when a call read it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
+    /// Not known without running the function (also a field chain of more than [`MAX_VALUE_NODES`] nodes).
     Unknown,
     Nil,
     Bool(bool),
     Number(f64),
-    Str(Vec<u8>),
+    /// A string constant, shared with every register and call that read it.
+    Str(Arc<[u8]>),
     /// The global of that name.
-    Global(Vec<u8>),
+    Global(Arc<[u8]>),
     /// `table[key]` (a field, or a method for `SELF`), both known.
     Field(Box<Value>, Box<Value>),
     /// The closure of the function at that index of the enclosing function's nested functions.
@@ -53,6 +61,9 @@ pub struct Call {
 }
 
 /// Every call in `root` and its nested functions, the function's own first, in instruction order.
+///
+/// The list holds one [`Call`] per `CALL` or `TAILCALL` instruction, each with at most 510 arguments, and the values
+/// share the strings of the constant tables: the memory used is bounded by the code and the constants of `root`.
 pub fn calls(root: &Proto) -> Vec<Call> {
     let mut out = Vec::new();
     walk(root, &mut Vec::new(), &mut out);
@@ -60,6 +71,16 @@ pub fn calls(root: &Proto) -> Vec<Call> {
 }
 
 fn walk(p: &Proto, path: &mut Vec<usize>, out: &mut Vec<Call>) {
+    let consts: Vec<Value> = p
+        .constants
+        .iter()
+        .map(|c| match c {
+            Constant::Nil => Value::Nil,
+            Constant::Bool(b) => Value::Bool(*b),
+            Constant::Number(n) => Value::Number(*n),
+            Constant::Str(s) => Value::Str(Arc::from(s.as_slice())),
+        })
+        .collect();
     let mut targets = vec![false; p.code.len()];
     let mut mark = |t: Option<usize>| {
         if let Some(slot) = t.and_then(|t| targets.get_mut(t)) {
@@ -88,7 +109,7 @@ fn walk(p: &Proto, path: &mut Vec<usize>, out: &mut Vec<Call>) {
                 let v = get(&regs, usize::from(i.b));
                 put(&mut regs, a, v);
             }
-            Op::LoadK => put(&mut regs, a, constant(p, usize_of(i.bx()))),
+            Op::LoadK => put(&mut regs, a, constant(&consts, usize_of(i.bx()))),
             Op::LoadBool => put(&mut regs, a, Value::Bool(i.b != 0)),
             Op::LoadNil => {
                 for r in a..=usize::from(i.b) {
@@ -96,24 +117,24 @@ fn walk(p: &Proto, path: &mut Vec<usize>, out: &mut Vec<Call>) {
                 }
             }
             Op::GetGlobal => {
-                let v = match constant(p, usize_of(i.bx())) {
+                let v = match constant(&consts, usize_of(i.bx())) {
                     Value::Str(name) => Value::Global(name),
                     _ => Value::Unknown,
                 };
                 put(&mut regs, a, v);
             }
             Op::GetTable => {
-                let v = field(get(&regs, usize::from(i.b)), rk(p, &regs, i.c));
+                let v = field(get(&regs, usize::from(i.b)), rk(&consts, &regs, i.c));
                 put(&mut regs, a, v);
             }
             Op::SelfOp => {
                 let object = get(&regs, usize::from(i.b));
-                let v = field(object.clone(), rk(p, &regs, i.c));
+                let v = field(object.clone(), rk(&consts, &regs, i.c));
                 put(&mut regs, a.saturating_add(1), object);
                 put(&mut regs, a, v);
             }
             Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow => {
-                let v = match (rk(p, &regs, i.b), rk(p, &regs, i.c)) {
+                let v = match (rk(&consts, &regs, i.b), rk(&consts, &regs, i.c)) {
                     (Value::Number(x), Value::Number(y)) => Value::Number(arithmetic(i.op, x, y)),
                     _ => Value::Unknown,
                 };
@@ -211,29 +232,32 @@ fn forget_from(regs: &mut [Value], r: usize) {
     }
 }
 
-fn constant(p: &Proto, k: usize) -> Value {
-    match p.constants.get(k) {
-        Some(Constant::Nil) => Value::Nil,
-        Some(Constant::Bool(b)) => Value::Bool(*b),
-        Some(Constant::Number(n)) => Value::Number(*n),
-        Some(Constant::Str(s)) => Value::Str(s.clone()),
-        None => Value::Unknown,
-    }
+fn constant(consts: &[Value], k: usize) -> Value {
+    consts.get(k).cloned().unwrap_or(Value::Unknown)
 }
 
 /// A register-or-constant operand.
-fn rk(p: &Proto, regs: &[Value], x: u16) -> Value {
+fn rk(consts: &[Value], regs: &[Value], x: u16) -> Value {
     match usize::from(x).checked_sub(256) {
-        Some(k) => constant(p, k),
+        Some(k) => constant(consts, k),
         None => get(regs, usize::from(x)),
     }
 }
 
 fn field(table: Value, key: Value) -> Value {
-    if table == Value::Unknown || key == Value::Unknown {
+    let nodes = nodes(&table).saturating_add(nodes(&key)).saturating_add(1);
+    if table == Value::Unknown || key == Value::Unknown || nodes > MAX_VALUE_NODES {
         Value::Unknown
     } else {
         Value::Field(Box::new(table), Box::new(key))
+    }
+}
+
+/// How many nodes a value holds (at most [`MAX_VALUE_NODES`], as `field` allows no more).
+fn nodes(v: &Value) -> usize {
+    match v {
+        Value::Field(table, key) => nodes(table).saturating_add(nodes(key)).saturating_add(1),
+        _ => 1,
     }
 }
 

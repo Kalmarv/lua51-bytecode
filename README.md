@@ -14,6 +14,7 @@ It reads Lua 5.1 only (not 5.2 or later, LuaJIT or Luau chunks).
 
 ```rust
 use lua51_bytecode::{Chunk, Value, calls};
+use std::sync::Arc;
 
 fn main() -> Result<(), lua51_bytecode::Error> {
     // `print(1.5, "a")` as `luac` writes it for a little-endian machine with 4-byte `int` and `size_t`.
@@ -40,26 +41,26 @@ fn main() -> Result<(), lua51_bytecode::Error> {
     let chunk = Chunk::parse(bytes)?;
 
     let found = calls(&chunk.main);
-    assert_eq!(found[0].callee, Value::Global(b"print".to_vec()));
-    assert_eq!(found[0].args, [Value::Number(1.5), Value::Str(b"a".to_vec())]);
+    assert_eq!(found[0].callee, Value::Global(Arc::from(&b"print"[..])));
+    assert_eq!(found[0].args, [Value::Number(1.5), Value::Str(Arc::from(&b"a"[..]))]);
     Ok(())
 }
 ```
 
 The same example runs as a doc test of the crate (`cargo test --doc`). To try the reader on a file, `cargo run --example list_calls -- script.luac` prints the header and the calls.
 
-The crate is not on crates.io yet; depend on it from git. Its API names byte orders with `Endian` from the [`primase-foundations`](https://github.com/Kalmarv/primase-foundations) crate, a small byte-cursor library it depends on.
+The crate is not on crates.io yet; depend on it from git. Its API names byte orders with `Endian`, which it re-exports from the [`primase-foundations`](https://github.com/Kalmarv/primase-foundations) crate, a small byte-cursor library it depends on.
 
 ## What it guarantees
 
 - **Checked reads.** `Chunk::parse` takes a byte slice, uses no `unsafe` (`unsafe_code` is denied), and the library source denies unchecked indexing, unchecked arithmetic and truncating casts at compile time. Malformed input returns an `Error`; it does not panic.
-- **Refusals name the offset and what was expected.** `Error { offset, detail }` prints as, for instance, `Lua 5.1 chunk at byte 4: not Lua 5.1 (version byte is not 0x51)`. Refused: any other header; a count the rest of the chunk cannot hold (no allocation is sized by an unchecked count); a string without its terminating NUL; a boolean other than 0 or 1; an unknown constant type; `is_vararg` bits Lua 5.1 does not define; a stack past 250 registers; line numbers for some but not all instructions; a local whose range leaves the code; upvalue names for some but not all upvalues; more than 200 functions nested inside one another (`MAX_DEPTH`); bytes after the main function; and code the verifier rejects.
-- **A verifier for the code.** A subset of Lua's own `luaG_checkcode` that needs no symbolic execution: an opcode that does not exist, a register past the stack, a constant, function or upvalue past its table, a jump out of the code, a test not followed by a jump, a `LOADBOOL` that skips past the end, a `CLOSURE` not followed by its upvalue instructions, and a function that does not end in `RETURN`.
+- **Refusals name the offset and what was expected.** `Error { offset, detail }` prints as, for instance, `Lua 5.1 chunk at byte 4: not Lua 5.1 (version byte is not 0x51)`. Refused: any other header; a count the rest of the chunk cannot hold at the least size of its items (no allocation is sized by an unchecked count); a string without its terminating NUL; a boolean other than 0 or 1; an unknown constant type; `is_vararg` bits Lua 5.1 does not define; a stack past 250 registers; line numbers for some but not all instructions; a local whose range leaves the code; upvalue names for some but not all upvalues; more than 200 functions nested inside one another (`MAX_DEPTH`); bytes after the main function; and code the verifier rejects.
+- **A verifier for the code.** A subset of Lua's own `luaG_checkcode` that needs no symbolic execution: an opcode that does not exist, a register past the stack, a constant, function or upvalue past its table, a `GETGLOBAL` or `SETGLOBAL` whose constant is not a string, a jump out of the code, a test not followed by a jump, a `LOADBOOL` that skips past the end, a `CLOSURE` not followed by its upvalue instructions, and a function that does not end in `RETURN`.
 - **The call lister does not guess.** It does not run branches or loops: every instruction a jump can reach starts from nothing known, so a value that came through control flow, an upvalue or a call's result is `Value::Unknown` (or `Value::Result`, naming the call), never a guess.
 
 ## What it does not do
 
-- It does not execute Lua, and it does not verify chunks as fully as the Lua VM's loader (no symbolic execution of registers; for example it does not check that the constant behind `GETGLOBAL` is a string).
+- It does not execute Lua, and it does not verify chunks as fully as the Lua VM's loader (no symbolic execution of registers).
 - It does not write chunks, print disassembly, or convert between byte orders or sizes.
 - The call lister lists a call under a condition as if it were unconditional (its arguments are those known on the straight path to it), and does not follow values through upvalues, tables built at run time, or arithmetic that is not on numbers.
 - Chunks with `int` or `size_t` sizes other than 4 or 8, instructions other than 4 bytes, or integral (non-float) numbers are refused, not read.
@@ -70,7 +71,7 @@ The crate is not on crates.io yet; depend on it from git. Its API names byte ord
 cargo test --workspace
 ```
 
-`tests/chunks.rs` reads chunks written out byte by byte from `lopcodes.h` and `lundump.c` (the same function big- and little-endian; one that folds `-10`, jumps and nests a method call; constants of every type). It refuses each header field, every truncation of each of them and a trailing byte, and each rule of the verifier at the byte that breaks it. The tests need no game files or other data.
+`tests/hostile.rs` and `tests/allocation.rs` hold hand-built hostile chunks: wrong offsets, counts larger than the bytes present (with a counting allocator), and field chains meant to blow up the call lister. `tests/chunks.rs` reads chunks written out byte by byte from `lopcodes.h` and `lundump.c` (the same function big- and little-endian; one that folds `-10`, jumps and nests a method call; constants of every type). It refuses each header field, every truncation of each of them and a trailing byte, and each rule of the verifier at the byte that breaks it. The tests need no game files or other data.
 
 ## Contributing
 

@@ -2,8 +2,8 @@
 //! reader is checked against the format and not against code that writes it.
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use lua51_bytecode::{Call, Chunk, Constant, Op, Value, calls};
-use primase_foundations::bytes::Endian;
+use lua51_bytecode::{Call, Chunk, Constant, Endian, Op, Value, calls};
+use std::sync::Arc;
 
 fn cat(parts: &[&[u8]]) -> Vec<u8> {
     parts.concat()
@@ -82,7 +82,7 @@ fn a_le() -> Vec<u8> {
 }
 
 fn print_call(c: &Call) {
-    assert_eq!(c.callee, Value::Global(b"print".to_vec()));
+    assert_eq!(c.callee, Value::Global(Arc::from(&b"print"[..])));
 }
 
 #[test]
@@ -120,7 +120,10 @@ fn lists_the_call_with_its_constant_arguments() {
     let list = calls(&c.main);
     assert_eq!(list.len(), 1);
     print_call(&list[0]);
-    assert_eq!(list[0].args, [Value::Number(1.5), Value::Str(b"a".to_vec())]);
+    assert_eq!(
+        list[0].args,
+        [Value::Number(1.5), Value::Str(Arc::from(&b"a"[..]))]
+    );
     assert_eq!(
         (list[0].pc, list[0].line, list[0].open_args, list[0].tail),
         (3, None, false, false)
@@ -220,8 +223,8 @@ fn lists_folds_resets_at_jump_targets_and_nested_functions() {
                 path: vec![],
                 pc: 4,
                 line: None,
-                callee: Value::Global(b"a".to_vec()),
-                args: vec![Value::Number(-10.0), Value::Str(b"s".to_vec())],
+                callee: Value::Global(Arc::from(&b"a"[..])),
+                args: vec![Value::Number(-10.0), Value::Str(Arc::from(&b"s"[..]))],
                 open_args: false,
                 tail: false,
             },
@@ -240,10 +243,13 @@ fn lists_folds_resets_at_jump_targets_and_nested_functions() {
                 pc: 3,
                 line: Some(3),
                 callee: Value::Field(
-                    Box::new(Value::Global(b"level".to_vec())),
-                    Box::new(Value::Str(b"Load".to_vec()))
+                    Box::new(Value::Global(Arc::from(&b"level"[..]))),
+                    Box::new(Value::Str(Arc::from(&b"Load"[..])))
                 ),
-                args: vec![Value::Global(b"level".to_vec()), Value::Str(b"p".to_vec())],
+                args: vec![
+                    Value::Global(Arc::from(&b"level"[..])),
+                    Value::Str(Arc::from(&b"p"[..]))
+                ],
                 open_args: false,
                 tail: false,
             },
@@ -292,7 +298,7 @@ fn refuses_each_header_field() {
     refuses(&with(a.clone(), 8, &[2]), 8, "size_t");
     refuses(&with(a.clone(), 9, &[8]), 9, "instruction");
     refuses(&with(a.clone(), 10, &[4]), 10, "8-byte floats");
-    refuses(&with(a, 11, &[1]), 10, "8-byte floats");
+    refuses(&with(a, 11, &[1]), 11, "integral");
 }
 
 #[test]
