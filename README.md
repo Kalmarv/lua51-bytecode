@@ -1,39 +1,83 @@
-# Lua 5.1 precompiled chunks
+# lua51-bytecode
 
-`Chunk::parse(bytes)` reads a `luac` 5.1 chunk, in either byte order, strictly, and `calls(&chunk.main)` lists the calls
-a script makes whose callee and arguments are constants, globals and fields of them: how a script that only configures
-an engine (`change_fog(400, 700, ...)`, `level.LoadData(level, "path")`) reads. The reader is game-independent; a game's
-crate says which calls mean what.
+A strict Rust reader for compiled Lua 5.1 scripts (`luac` output) that checks untrusted bytes and refuses what `luac` would never write, plus a lister of the calls a script makes with constant arguments.
 
-**Header.** `ESC Lua`, version `0x51`, format 0, a byte-order flag (0 big, 1 little), the sizes of `int` and `size_t`
-(4 or 8 each), of an instruction (4) and of a number (8, a float: the integral flag must be 0). Both byte orders
-read with the same code (the one game's scripts it was built for are little-endian with 4-byte `int` and `size_t`;
-the fixtures cover big-endian too).
+## What it reads
 
-**Refused, naming the byte:** any other header; a count the rest of the chunk cannot hold (no allocation is sized by an
-unchecked count); a string without its terminating NUL; a boolean other than 0 or 1; a constant of an unknown type;
-`is_vararg` bits Lua 5.1 does not define; a stack past 250 registers; line numbers for some but not all instructions;
-a local whose range leaves the code; upvalue names for some but not all upvalues; a chain of more than 200 functions
-inside one another; a byte after the main function; and code the verifier rejects. The verifier is the subset of
-`luaG_checkcode` that needs no symbolic execution: an opcode that does not exist, a register past the stack, a
-constant, function or upvalue past its table, a jump out of the code, a test not followed by a jump, a `LOADBOOL` that
-skips past the end, a `CLOSURE` not followed by its upvalue instructions, and a function that does not end in `RETURN`.
+- **Lua 5.1 precompiled chunks** (`ESC Lua`, version `0x51`, format 0) in either byte order, with 4- or 8-byte `int` and `size_t`, 4-byte instructions and 8-byte floating-point numbers.
+- Everything in a chunk: the header, each function prototype (source name, line range, upvalue and parameter counts, `is_vararg`, stack size), the decoded instructions (all 38 Lua 5.1 opcodes), the constants (`nil`, booleans, numbers, strings as bytes), nested functions, and the debug tables (line numbers, locals, upvalue names) when the chunk is not stripped.
+- **Calls with constant arguments.** `calls(&chunk.main)` follows registers through `LOADK`, `LOADBOOL`, `LOADNIL`, `MOVE`, `GETGLOBAL`, `GETTABLE`, `SELF` and arithmetic on numbers, and reports every `CALL` and `TAILCALL` with what its callee and arguments held. This is how a script that only configures an engine, such as `change_fog(400, 700, -10)` or `level.LoadData(level, "path")`, reads without running a Lua VM.
 
-**The call lister** follows registers through the instructions that put constants in place and reports every `CALL`
-and `TAILCALL` with what its callee and arguments held. It does not run branches or loops: every instruction a jump can
-reach starts from nothing known, so a value that came through control flow is `Value::Unknown`, never a guess. A call
-under a condition is listed as unconditional; its arguments are those on the straight path to it.
+It reads Lua 5.1 only (not 5.2 or later, LuaJIT or Luau chunks).
 
-**Why this is written here.** No maintained crate reads these chunks the way a loader of untrusted bytes must (checked
-on crates.io, 2026-10-26): `luac-parser` 0.5.3 (MIT) returns only the parsed function and drops any bytes after it, uses `unsafe` pointer arithmetic for its error offsets and brings nom,
-serde, bincode and rmp-serde for a format of a few hundred lines; `lunify` 2.0.0 (MIT) only converts chunks byte to byte
-between formats and exposes no parsed function; `lua-bytecode` 0.3.5 is GPL-3.0-only; `lua-assembler` 0.1.1 is MPL-2.0
-on the `gaia` / `oak` crates. Nothing here uses their code.
+## Example
 
-**Checks.** `tests/chunks.rs` reads chunks written out byte by byte from `lopcodes.h` and `lundump.c` (a big-endian
-function, the same function little-endian, a function that folds `-10`, jumps and nests a method call, constants of
-every type), refuses each header field, every truncation of each of them and a trailing byte, and each rule of the
-verifier at the byte that breaks it. Run over the 1,278 scripts of the one console game it was built for, the reader
-refuses none, and the lister finds the same 89,819 calls in the same 1,223 scripts as an independent Python lister
-written from the same format description (call counts per script; their arguments differ only where this lister
-resets at jump targets).
+```rust
+use lua51_bytecode::{Chunk, Value, calls};
+
+fn main() -> Result<(), lua51_bytecode::Error> {
+    // `print(1.5, "a")` as `luac` writes it for a little-endian machine with 4-byte `int` and `size_t`.
+    let bytes: &[u8] = &[
+        0x1b, b'L', b'u', b'a', 0x51, 0, 1, 4, 4, 4, 8, 0, // header
+        0, 0, 0, 0, // no source name
+        0, 0, 0, 0, 0, 0, 0, 0, // line defined, last line defined
+        0, 0, 2, 3, // upvalues, parameters, is_vararg, max stack
+        5, 0, 0, 0, // five instructions:
+        0x05, 0x00, 0x00, 0x00, //   GETGLOBAL R0 K0
+        0x41, 0x40, 0x00, 0x00, //   LOADK R1 K1
+        0x81, 0x80, 0x00, 0x00, //   LOADK R2 K2
+        0x1c, 0x40, 0x80, 0x01, //   CALL R0 B3 C1
+        0x1e, 0x00, 0x80, 0x00, //   RETURN R0 B1
+        3, 0, 0, 0, // three constants:
+        4, 6, 0, 0, 0, b'p', b'r', b'i', b'n', b't', 0, //   "print"
+        3, 0, 0, 0, 0, 0, 0, 0xf8, 0x3f, //   1.5
+        4, 2, 0, 0, 0, b'a', 0, //   "a"
+        0, 0, 0, 0, // no nested functions
+        0, 0, 0, 0, // no line numbers
+        0, 0, 0, 0, // no locals
+        0, 0, 0, 0, // no upvalue names
+    ];
+    let chunk = Chunk::parse(bytes)?;
+
+    let found = calls(&chunk.main);
+    assert_eq!(found[0].callee, Value::Global(b"print".to_vec()));
+    assert_eq!(found[0].args, [Value::Number(1.5), Value::Str(b"a".to_vec())]);
+    Ok(())
+}
+```
+
+The same example runs as a doc test of the crate (`cargo test --doc`). To try the reader on a file, `cargo run --example list_calls -- script.luac` prints the header and the calls.
+
+The crate is not on crates.io yet; depend on it from git. Its API names byte orders with `Endian` from the [`primase-foundations`](https://github.com/Kalmarv/primase-foundations) crate, a small byte-cursor library it depends on.
+
+## What it guarantees
+
+- **Checked reads.** `Chunk::parse` takes a byte slice, uses no `unsafe` (`unsafe_code` is denied), and the library source denies unchecked indexing, unchecked arithmetic and truncating casts at compile time. Malformed input returns an `Error`; it does not panic.
+- **Refusals name the offset and what was expected.** `Error { offset, detail }` prints as, for instance, `Lua 5.1 chunk at byte 4: not Lua 5.1 (version byte is not 0x51)`. Refused: any other header; a count the rest of the chunk cannot hold (no allocation is sized by an unchecked count); a string without its terminating NUL; a boolean other than 0 or 1; an unknown constant type; `is_vararg` bits Lua 5.1 does not define; a stack past 250 registers; line numbers for some but not all instructions; a local whose range leaves the code; upvalue names for some but not all upvalues; more than 200 functions nested inside one another (`MAX_DEPTH`); bytes after the main function; and code the verifier rejects.
+- **A verifier for the code.** A subset of Lua's own `luaG_checkcode` that needs no symbolic execution: an opcode that does not exist, a register past the stack, a constant, function or upvalue past its table, a jump out of the code, a test not followed by a jump, a `LOADBOOL` that skips past the end, a `CLOSURE` not followed by its upvalue instructions, and a function that does not end in `RETURN`.
+- **The call lister does not guess.** It does not run branches or loops: every instruction a jump can reach starts from nothing known, so a value that came through control flow, an upvalue or a call's result is `Value::Unknown` (or `Value::Result`, naming the call), never a guess.
+
+## What it does not do
+
+- It does not execute Lua, and it does not verify chunks as fully as the Lua VM's loader (no symbolic execution of registers; for example it does not check that the constant behind `GETGLOBAL` is a string).
+- It does not write chunks, print disassembly, or convert between byte orders or sizes.
+- The call lister lists a call under a condition as if it were unconditional (its arguments are those known on the straight path to it), and does not follow values through upvalues, tables built at run time, or arithmetic that is not on numbers.
+- Chunks with `int` or `size_t` sizes other than 4 or 8, instructions other than 4 bytes, or integral (non-float) numbers are refused, not read.
+
+## Tests
+
+```sh
+cargo test --workspace
+```
+
+`tests/chunks.rs` reads chunks written out byte by byte from `lopcodes.h` and `lundump.c` (the same function big- and little-endian; one that folds `-10`, jumps and nests a method call; constants of every type). It refuses each header field, every truncation of each of them and a trailing byte, and each rule of the verifier at the byte that breaks it. The tests need no game files or other data.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), including how to report a file this crate cannot read.
+
+## License
+
+GPL-3.0-or-later; see [LICENSE](LICENSE).
+
+Used by [primase](https://github.com/Kalmarv/primase), a game-asset conversion library.

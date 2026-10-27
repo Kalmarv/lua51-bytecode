@@ -1,19 +1,61 @@
-//! Lua 5.1 precompiled chunks (`luac` output), read strictly in either byte order.
+//! A strict reader for Lua 5.1 precompiled chunks (the output of `luac`), in either byte order, and a lister of the
+//! calls a script makes with constant arguments.
 //!
 //! A chunk is a 12-byte header (`ESC Lua`, version `0x51`, format 0, the byte-order flag, the sizes of `int`,
 //! `size_t`, an instruction and a number, and the integral-number flag) and one function: its name, lines, upvalue and
 //! parameter counts, code, constants, nested functions and (unless stripped) debug tables. [`Chunk::parse`] reads
-//! exactly that. What `luac` never writes, and a loader for untrusted bytes must not take, is an error naming the
-//! byte: a header of any other version or format, sizes other than 4 or 8 for `int` and `size_t`, an instruction other
-//! than 4 bytes, a number other than an 8-byte float, a count the rest of the chunk cannot hold, a string without its
-//! terminating NUL, a boolean other than 0 or 1, an unknown constant type, a chain of more than 200 functions inside one another, a byte after the
-//! main function, and code the verifier ([`Proto`] checks a subset of `luaG_checkcode`) rejects: an opcode that does
-//! not exist, a register past the function's stack, a constant, function or upvalue past its table, a jump out of the
-//! code, a test not followed by a jump, a `CLOSURE` not followed by its upvalue instructions, and a function that does
-//! not end in `RETURN`.
+//! exactly that from a byte slice and does not panic on malformed input. What `luac` never writes, and a loader of
+//! untrusted bytes must not take, is an [`Error`] naming the byte offset and what was wrong: a header of any other
+//! version or format, sizes other than 4 or 8 for `int` and `size_t`, an instruction other than 4 bytes, a number other
+//! than an 8-byte float, a count the rest of the chunk cannot hold, a string without its terminating NUL, a boolean
+//! other than 0 or 1, an unknown constant type, a chain of more than [`MAX_DEPTH`] functions inside one another, a byte
+//! after the main function, and code the verifier rejects. The verifier is a subset of `luaG_checkcode`: it refuses an
+//! opcode that does not exist, a register past the function's stack, a constant, function or upvalue past its table, a
+//! jump out of the code, a test not followed by a jump, a `CLOSURE` not followed by its upvalue instructions, and a
+//! function that does not end in `RETURN`.
 //!
 //! [`calls`] lists the calls a function makes whose callee and arguments are constants, globals and fields of
 //! them, which is how a script that only configures an engine reads.
+//!
+//! ```
+//! use lua51_bytecode::{Chunk, Value, calls};
+//!
+//! // `print(1.5, "a")` as `luac` writes it for a little-endian machine with 4-byte `int` and `size_t`.
+//! let bytes: &[u8] = &[
+//!     0x1b, b'L', b'u', b'a', 0x51, 0, 1, 4, 4, 4, 8, 0, // header
+//!     0, 0, 0, 0, // no source name
+//!     0, 0, 0, 0, 0, 0, 0, 0, // line defined, last line defined
+//!     0, 0, 2, 3, // upvalues, parameters, is_vararg, max stack
+//!     5, 0, 0, 0, // five instructions:
+//!     0x05, 0x00, 0x00, 0x00, //   GETGLOBAL R0 K0
+//!     0x41, 0x40, 0x00, 0x00, //   LOADK R1 K1
+//!     0x81, 0x80, 0x00, 0x00, //   LOADK R2 K2
+//!     0x1c, 0x40, 0x80, 0x01, //   CALL R0 B3 C1
+//!     0x1e, 0x00, 0x80, 0x00, //   RETURN R0 B1
+//!     3, 0, 0, 0, // three constants:
+//!     4, 6, 0, 0, 0, b'p', b'r', b'i', b'n', b't', 0, //   "print"
+//!     3, 0, 0, 0, 0, 0, 0, 0xf8, 0x3f, //   1.5
+//!     4, 2, 0, 0, 0, b'a', 0, //   "a"
+//!     0, 0, 0, 0, // no nested functions
+//!     0, 0, 0, 0, // no line numbers
+//!     0, 0, 0, 0, // no locals
+//!     0, 0, 0, 0, // no upvalue names
+//! ];
+//! let chunk = Chunk::parse(bytes)?;
+//! assert_eq!(chunk.main.code.len(), 5);
+//!
+//! let found = calls(&chunk.main);
+//! assert_eq!(found.len(), 1);
+//! assert_eq!(found[0].callee, Value::Global(b"print".to_vec()));
+//! assert_eq!(found[0].args, [Value::Number(1.5), Value::Str(b"a".to_vec())]);
+//!
+//! // Anything `luac` would not write is refused, with the offset of the byte at fault.
+//! let error = Chunk::parse(&bytes[..bytes.len() - 1]).unwrap_err();
+//! assert!(error.offset <= bytes.len());
+//! # Ok::<(), lua51_bytecode::Error>(())
+//! ```
+//!
+//! Byte orders are named with `Endian` from the `primase-foundations` crate (`primase_foundations::bytes::Endian`).
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 #![deny(
     clippy::arithmetic_side_effects,
@@ -32,7 +74,9 @@ use primase_foundations::bytes::{BoundsError, Cursor, Endian};
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("Lua 5.1 chunk at byte {offset}: {detail}")]
 pub struct Error {
+    /// Byte offset in the chunk of the field at fault.
     pub offset: usize,
+    /// What was found and what was expected there.
     pub detail: String,
 }
 
@@ -44,7 +88,7 @@ fn bounds(e: BoundsError) -> Error {
 }
 
 /// The longest chain of functions inside one another, the main function included, that is read (a bound of this
-/// reader, in the spirit of the parser's `LUAI_MAXCCALLS`).
+/// reader, in the spirit of the Lua parser's `LUAI_MAXCCALLS`).
 pub const MAX_DEPTH: usize = 200;
 
 /// The deepest stack a function may declare (`MAXSTACK`).
@@ -53,6 +97,7 @@ const MAX_STACK: u8 = 250;
 /// The header's facts a reader needs: how numbers are stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
+    /// Byte order of every multi-byte number in the chunk.
     pub endian: Endian,
     /// Bytes of `int` (4 or 8).
     pub int_size: u8,
@@ -63,8 +108,11 @@ pub struct Header {
 /// A constant of a function.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Constant {
+    /// `nil`.
     Nil,
+    /// `true` or `false`.
     Bool(bool),
+    /// A number (Lua 5.1 has only 8-byte floats).
     Number(f64),
     /// Bytes, as stored without the terminating NUL (a Lua string need not be text).
     Str(Vec<u8>),
@@ -73,8 +121,11 @@ pub enum Constant {
 /// A local variable's debug record: its name and the instructions it lives over.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Local {
+    /// The variable's name, as bytes.
     pub name: Vec<u8>,
+    /// Index of the first instruction where it is live.
     pub start_pc: u32,
+    /// Index just past the last instruction where it is live (at most the instruction count).
     pub end_pc: u32,
 }
 
@@ -83,26 +134,38 @@ pub struct Local {
 pub struct Proto {
     /// The source name (the main function of a stripped chunk has none).
     pub source: Option<Vec<u8>>,
+    /// Line where the function starts (0 for the main function).
     pub line_defined: u32,
+    /// Line where the function ends.
     pub last_line_defined: u32,
+    /// Number of upvalues the function captures.
     pub upvalues: u8,
+    /// Number of fixed parameters.
     pub params: u8,
     /// `is_vararg`: bit 0 `HASARG`, bit 1 `ISVARARG`, bit 2 `NEEDSARG`.
     pub vararg: u8,
+    /// Registers the function uses (at most 250).
     pub max_stack: u8,
+    /// The decoded instructions.
     pub code: Vec<Instruction>,
+    /// The constant table.
     pub constants: Vec<Constant>,
+    /// The nested functions, in the order `CLOSURE` indexes them.
     pub protos: Vec<Proto>,
     /// Source line of each instruction; empty when stripped.
     pub lines: Vec<u32>,
+    /// Local variable records; empty when stripped.
     pub locals: Vec<Local>,
+    /// Upvalue names; empty when stripped.
     pub upvalue_names: Vec<Vec<u8>>,
 }
 
 /// A whole chunk.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chunk {
+    /// How the chunk stores numbers.
     pub header: Header,
+    /// The main function; the others are in [`Proto::protos`].
     pub main: Proto,
 }
 
@@ -317,7 +380,7 @@ impl Reader<'_> {
 }
 
 impl Chunk {
-    /// Read a chunk, all of `bytes`.
+    /// Read a chunk, all of `bytes`: an [`Error`] if they are not exactly one well-formed chunk.
     pub fn parse(bytes: &[u8]) -> Result<Chunk, Error> {
         let mut c = Cursor::new(bytes);
         let at = c.position();

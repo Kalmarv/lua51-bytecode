@@ -6,7 +6,7 @@
     clippy::cast_possible_truncation
 )]
 
-/// The 38 opcodes of Lua 5.1, in `lopcodes.h`'s order (the number a word stores).
+/// The 38 opcodes of Lua 5.1, in `lopcodes.h`'s order (the number a word stores); `SelfOp` is `OP_SELF`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
     Move,
@@ -144,6 +144,7 @@ impl Op {
         )
     }
 
+    /// How the instruction lays out its operands after `A`.
     pub fn layout(self) -> Layout {
         match self {
             Op::LoadK | Op::GetGlobal | Op::SetGlobal | Op::Closure => Layout::Abx,
@@ -213,9 +214,13 @@ impl Op {
 /// A decoded instruction. `b` and `c` are the 9-bit fields, `bx` the 18-bit one over both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Instruction {
+    /// The opcode.
     pub op: Op,
+    /// The 8-bit `A` field.
     pub a: u8,
+    /// The 9-bit `B` field (see [`Instruction::bx`] for the layouts that join it with `C`).
     pub b: u16,
+    /// The 9-bit `C` field.
     pub c: u16,
 }
 
