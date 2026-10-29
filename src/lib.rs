@@ -11,8 +11,11 @@
 //! other than 0 or 1, an unknown constant type, a chain of more than [`MAX_DEPTH`] functions inside one another, a byte
 //! after the main function, and code the verifier rejects. The verifier is a subset of `luaG_checkcode`: it refuses an
 //! opcode that does not exist, a register past the function's stack, a constant, function or upvalue past its table, a `GETGLOBAL` or `SETGLOBAL` whose constant is not a string, a
-//! jump out of the code, a test not followed by a jump, a `CLOSURE` not followed by its upvalue instructions, and a
+//! jump out of the code, a `SETLIST` with `C` 0 that has no block number after it, a test not followed by a jump, a `CLOSURE` not followed by its upvalue instructions, and a
 //! function that does not end in `RETURN`.
+//!
+//! A `SETLIST` with `C` 0 is followed by a word that is a number and not an instruction; it is read as an
+//! [`Op::Data`] instruction, so that every pc and line number still counts it.
 //!
 //! [`calls`] lists the calls a function makes whose callee and arguments are constants, globals and fields of
 //! them, which is how a script that only configures an engine reads.
@@ -393,11 +396,24 @@ impl Reader<'_> {
         }
 
         let mut code = Vec::with_capacity(words.len());
+        let mut data = false;
         for (i, &w) in words.iter().enumerate() {
             let at = code_at.saturating_add(i.saturating_mul(4));
-            code.push(
-                Instruction::decode(w).map_err(|op| self.err(at, format!("opcode {op} does not exist")))?,
-            );
+            if data {
+                code.push(Instruction::data(w));
+                data = false;
+                continue;
+            }
+            let ins =
+                Instruction::decode(w).map_err(|op| self.err(at, format!("opcode {op} does not exist")))?;
+            data = ins.op == Op::SetList && ins.c == 0;
+            code.push(ins);
+        }
+        if data {
+            return Err(self.err(
+                code_at.saturating_add(words.len().saturating_mul(4)),
+                "a SETLIST with C 0 as the last word, with no block number after it",
+            ));
         }
         let proto = Proto {
             source,
@@ -531,6 +547,16 @@ impl Proto {
         };
         for (pc, i) in self.code.iter().enumerate() {
             let check = || -> Result<(), String> {
+                let after_set_list_0 = pc
+                    .checked_sub(1)
+                    .and_then(|p| self.code.get(p))
+                    .is_some_and(|j| j.op == Op::SetList && j.c == 0);
+                if (i.op == Op::Data) != after_set_list_0 {
+                    return Err("a data word that is not the block number of a SETLIST with C 0".into());
+                }
+                if i.op == Op::Data {
+                    return Ok(());
+                }
                 if i.op.sets_a() {
                     reg(usize::from(i.a), "A")?;
                 }

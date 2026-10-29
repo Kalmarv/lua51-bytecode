@@ -6,7 +6,8 @@
     clippy::cast_possible_truncation
 )]
 
-/// The 38 opcodes of Lua 5.1, in `lopcodes.h`'s order (the number a word stores); `SelfOp` is `OP_SELF`.
+/// The 38 opcodes of Lua 5.1, in `lopcodes.h`'s order (the number a word stores); `SelfOp` is `OP_SELF`. `Data` is
+/// the 39th, which no word stores: see [`Op::Data`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
     /// `R(A) := R(B)`.
@@ -85,6 +86,9 @@ pub enum Op {
     Closure,
     /// `R(A) .. R(A+B-2) = ...`; `B` 0 takes all the extra arguments.
     VarArg,
+    /// Not an opcode: the word after a [`Op::SetList`] whose `C` is 0 is the block number itself, a plain integer
+    /// that takes an instruction's place (so every pc and line still counts it); [`Instruction::word`] holds it.
+    Data,
 }
 
 const OPS: [Op; 38] = [
@@ -174,6 +178,7 @@ impl Op {
                 | Op::TForLoop
                 | Op::SetList
                 | Op::Close
+                | Op::Data
         )
     }
 
@@ -264,6 +269,8 @@ pub struct Instruction {
     pub b: u16,
     /// The 9-bit `C` field.
     pub c: u16,
+    /// The word as stored (for [`Op::Data`], the number it holds).
+    pub word: u32,
 }
 
 /// The low `N` bytes of a number whose value is known to fit them.
@@ -287,7 +294,20 @@ impl Instruction {
             a,
             c: u16::from_le_bytes(low::<2>((word >> 14) & 0x1ff)),
             b: u16::from_le_bytes(low::<2>((word >> 23) & 0x1ff)),
+            word,
         })
+    }
+
+    /// The word after a `SETLIST` with `C` 0: a number, not an instruction (its fields are those the bits would make).
+    pub fn data(word: u32) -> Instruction {
+        let [a] = low::<1>((word >> 6) & 0xff);
+        Instruction {
+            op: Op::Data,
+            a,
+            c: u16::from_le_bytes(low::<2>((word >> 14) & 0x1ff)),
+            b: u16::from_le_bytes(low::<2>((word >> 23) & 0x1ff)),
+            word,
+        }
     }
 
     /// `Bx`: `B` and `C` as one unsigned 18-bit number.
@@ -332,5 +352,12 @@ mod tests {
         assert_eq!(Instruction::decode(38), Err(38));
         assert_eq!(Instruction::decode(63), Err(63));
         assert!(Instruction::decode(37).is_ok());
+    }
+
+    /// A data word keeps all 32 bits, whatever its low six say.
+    #[test]
+    fn data_word() {
+        let i = Instruction::data(0xFFFF_FF26);
+        assert_eq!((i.op, i.word), (Op::Data, 0xFFFF_FF26));
     }
 }

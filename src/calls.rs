@@ -197,6 +197,7 @@ fn walk(p: &Proto, path: &mut Vec<usize>, out: &mut Vec<Call>) {
             | Op::Le
             | Op::Return
             | Op::SetList
+            | Op::Data
             | Op::Close
             | Op::Test => {}
         }

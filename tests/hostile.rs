@@ -4,7 +4,7 @@
 mod common;
 
 use common::*;
-use lua51_bytecode::{Chunk, Value, calls};
+use lua51_bytecode::{Chunk, Op, Value, calls};
 
 fn parse_err(bytes: &[u8]) -> lua51_bytecode::Error {
     Chunk::parse(bytes).unwrap_err()
@@ -121,4 +121,27 @@ fn self_referential_fields_do_not_double_without_bound() {
     words.push(RETURN);
     let c = Chunk::parse(&chunk(&func(&words, &consts, 2))).unwrap();
     assert_eq!(calls(&c.main)[0].callee, Value::Unknown);
+}
+
+/// `SETLIST` with `C` 0 is followed by a word that is the block number, not an instruction (`lopcodes.h`): it can
+/// hold any bits, takes a pc, and `luac` writes it for tables of more than 25,550 items.
+#[test]
+fn set_list_with_c_0_takes_a_data_word() {
+    const OP_SETLIST: u32 = 34;
+    let set_list = abc(OP_SETLIST, 0, 3, 0);
+    // 0x226 is what luac wrote after such a SETLIST in a real chunk; its low six bits make opcode 38, which no
+    // instruction has.
+    for number in [0x226, 0xFFFF_FFFF, 0] {
+        let bytes = chunk(&func(&[set_list, number, RETURN], &[], 4));
+        let c = Chunk::parse(&bytes).unwrap();
+        let ops: Vec<_> = c.main.code.iter().map(|i| i.op).collect();
+        assert_eq!(ops, [Op::SetList, Op::Data, Op::Return]);
+        assert_eq!(c.main.code[1].word, number);
+    }
+    // The same word after a SETLIST with C 1 is an instruction, and 0x226 is no instruction.
+    let bytes = chunk(&func(&[abc(OP_SETLIST, 0, 3, 1), 0x226, RETURN], &[], 4));
+    assert!(parse_err(&bytes).detail.contains("opcode 38"));
+    // A SETLIST with C 0 that ends the code has no block number.
+    let bytes = chunk(&func(&[RETURN, set_list], &[], 4));
+    assert!(parse_err(&bytes).detail.contains("no block number"));
 }
