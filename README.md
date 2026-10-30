@@ -5,7 +5,7 @@ A strict Rust reader for compiled Lua 5.1 scripts (`luac` output) that checks un
 ## What it reads
 
 - **Lua 5.1 precompiled chunks** (`ESC Lua`, version `0x51`, format 0) in either byte order, with 4- or 8-byte `int` and `size_t`, 4-byte instructions and 8-byte floating-point numbers.
-- Everything in a chunk: the header, each function prototype (source name, line range, upvalue and parameter counts, `is_vararg`, stack size), the decoded instructions (all 38 Lua 5.1 opcodes), the constants (`nil`, booleans, numbers, strings as bytes), nested functions, and the debug tables (line numbers, locals, upvalue names) when the chunk is not stripped.
+- Everything in a chunk: the header, each function prototype (source name, line range, upvalue and parameter counts, `is_vararg`, stack size), the decoded instructions (all 38 Lua 5.1 opcodes, plus `Op::Data` for the extra block-number word after `SETLIST` with `C` zero), the constants (`nil`, booleans, numbers, strings as bytes), nested functions, and the debug tables (line numbers, locals, upvalue names) when the chunk is not stripped.
 - **Calls with constant arguments.** `calls(&chunk.main)` follows registers through `LOADK`, `LOADBOOL`, `LOADNIL`, `MOVE`, `GETGLOBAL`, `GETTABLE`, `SELF` and arithmetic on numbers, and reports every `CALL` and `TAILCALL` with what its callee and arguments held. This is how a script that only configures an engine, such as `change_fog(400, 700, -10)` or `level.LoadData(level, "path")`, reads without running a Lua VM.
 
 It reads Lua 5.1 only (not 5.2 or later, LuaJIT or Luau chunks). It is checked against chunks written byte by byte from the Lua 5.1 sources (`lopcodes.h`, `lundump.c`) and hostile variants of them; this repository holds no scripts from any game.
@@ -76,6 +76,11 @@ cargo test --workspace
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), including how to report a file this crate cannot read.
+
+## Check the examples
+
+From the repository root, `cargo test -p lua51-bytecode --doc` checks the crate documentation, and
+`cargo build -p lua51-bytecode --examples` builds its example programs. Examples that read paths need the caller's files; the repository ships no game assets.
 
 ## License
 
