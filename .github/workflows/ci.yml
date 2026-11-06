@@ -3,6 +3,7 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  workflow_dispatch:
 jobs:
   check:
     strategy:
@@ -35,20 +36,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: "1.99.0"
-      - id: release-plz
-        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
+      - uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
         with:
           command: release
         env:
           GITHUB_TOKEN: ${{ github.token }}
-      # a tag pushed with this job's token starts no workflow, so this starts the binaries' (release.yml)
-      - if: steps.release-plz.outputs.releases_created == 'true' && hashFiles('.github/workflows/release.yml') != ''
+      # a tag pushed with this job's token starts no workflow, so this starts the binaries' (release.yml) for each
+      # Release of this commit that is still a draft (also when a rerun finishes a release)
+      - if: hashFiles('.github/workflows/release.yml') != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASES: ${{ steps.release-plz.outputs.releases }}
         run: |
-          for tag in $(jq -r '.[].tag' <<< "$RELEASES" | sort -u); do
-            if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+          git fetch -q --tags
+          drafts=$(gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName')
+          for tag in $(git tag --points-at HEAD); do
+            if grep -qx "$tag" <<< "$drafts"; then
               gh workflow run release.yml --ref "$tag" -f tag="$tag"
             fi
           done
