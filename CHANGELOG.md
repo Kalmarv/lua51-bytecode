@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 (2026-11-06)
+
+- Releases are made by release-plz (crates.io, tag, GitHub Release) from CI; no code changes.
+
 ## 0.2.0 (2026-10-29)
 
 - Fix: a `SETLIST` with `C` 0 (`luac` writes it for tables of more than 25,550 items) is followed by a word that is the block number, which was refused as an unknown opcode when its low six bits made one. It is now read as an `Op::Data` instruction (breaking: `Op` gains the variant `Data`, and `Instruction` a `word` field and a `data` constructor), and a `SETLIST` with `C` 0 at the end of the code is refused.
