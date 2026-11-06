@@ -1,5 +1,7 @@
 # lua51-bytecode
 
+[![crates.io: lua51-bytecode](https://img.shields.io/crates/v/lua51-bytecode?label=lua51-bytecode)](https://crates.io/crates/lua51-bytecode) [![docs.rs](https://img.shields.io/docsrs/lua51-bytecode)](https://docs.rs/lua51-bytecode) [![CI](https://img.shields.io/github/actions/workflow/status/Kalmarv/lua51-bytecode/ci.yml?branch=main&label=CI)](https://github.com/Kalmarv/lua51-bytecode/actions/workflows/ci.yml)
+
 A Rust library that reads compiled Lua 5.1 scripts (the chunks `luac` writes). It also lists the calls a script makes with constant arguments, so scripts that only configure an engine can be read as data without running Lua.
 
 ## Features
